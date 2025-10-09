@@ -15,10 +15,8 @@ export default function AgentPage({ clientId }) {
             setConversations(convs || []);
         };
 
-        // Initial load
         load();
 
-        // Poll every 4 seconds
         const poll = setInterval(load, 4000);
 
         return () => clearInterval(poll);

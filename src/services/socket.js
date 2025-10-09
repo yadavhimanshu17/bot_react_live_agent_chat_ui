@@ -21,9 +21,8 @@ export function connectLiveAgentSocket(sessionId, onMessage, onOpen) {
             const data = JSON.parse(ev.data);
             console.log("[LiveAgent Socket] Received:", data);
 
-            // If message from agent, mark it for user bubble
             if (data.from_agent) {
-                data.role = "agent";  // frontend can use this to style bubble
+                data.role = "agent";
             } else {
                 data.role = "user";
             }

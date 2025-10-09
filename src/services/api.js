@@ -3,9 +3,7 @@ import { connectLiveAgentSocket, sendAgentMessage } from "./socket";
 
 const BACKEND = process.env.REACT_APP_BACKEND_HTTP || "http://localhost:8000";
 
-// -------------------------
-// Fetch Active Conversations
-// -------------------------
+
 export const fetchActiveConversations = async (clientId) => {
     try {
         const r = await axios.get(`${BACKEND}/live_agent_sessions/conversations/${clientId}`);
@@ -17,9 +15,7 @@ export const fetchActiveConversations = async (clientId) => {
     }
 };
 
-// -------------------------
-// Start Live Agent Session
-// -------------------------
+
 export const startLiveAgent = async (clientId, userId, onMessage, onOpen) => {
     try {
         console.log("[React] Starting live agent for:", clientId, userId);
@@ -29,12 +25,11 @@ export const startLiveAgent = async (clientId, userId, onMessage, onOpen) => {
             user_id: userId,
             channel: "web",
             message: "User requested live agent"
-        }, { timeout: 10000 }); // 🔹 timeout increased
+        }, { timeout: 10000 });
 
         const sessionId = r.data.session_id;
         console.log("[React] LiveAgent sessionId from backend:", sessionId);
 
-        // Connect WebSocket
         const ws = connectLiveAgentSocket(sessionId, onMessage, onOpen);
         return ws;
 
@@ -44,9 +39,6 @@ export const startLiveAgent = async (clientId, userId, onMessage, onOpen) => {
     }
 };
 
-// -------------------------
-// Send message to agent
-// -------------------------
 export const sendMessageToAgent = (ws, text, metadata = {}) => {
     if (!ws) {
         console.error("[React] WebSocket not initialized");
@@ -54,3 +46,14 @@ export const sendMessageToAgent = (ws, text, metadata = {}) => {
     }
     return sendAgentMessage(ws, text, metadata);
 };
+
+
+export const endLiveAgentSession = async (sessionId) => {
+    try {
+        const r = await axios.post(`${BACKEND}/live_agent_sessions/end/${sessionId}`);
+        return r.data;
+    } catch (e) {
+        console.error("[React] endLiveAgentSession error:", e);
+        throw e;
+    }
+};  
