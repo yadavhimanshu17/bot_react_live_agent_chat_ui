@@ -1,145 +1,110 @@
-import React, { useEffect, useRef, useState } from "react";
-import { connectLiveAgentSocket, sendAgentMessage } from "../services/socket";
-import { endLiveAgentSession } from "../services/api";
-
-export default function AgentChatWindow({ session, clientId }) {
-    const [messages, setMessages] = useState([]);
-    const [input, setInput] = useState("");
-    const [ending, setEnding] = useState(false);
-    const wsRef = useRef(null);
-
-    useEffect(() => {
-        setMessages([]);
-        if (!session) return;
-
-        const ws = connectLiveAgentSocket(
-            session.session_id,
-            (msg) => {
-                if (msg.event === "session_ended") {
-                    setMessages(prev => [
-                        ...prev,
-                        { text: "Session ended by system", sender: "system", timestamp: Date.now() }
-                    ]);
-                    try { wsRef.current && wsRef.current.close(); } catch (e) { }
-                    return;
-                }
-                if (msg.event === "peer_disconnected") {
-                    setMessages(prev => [
-                        ...prev,
-                        { text: `Peer disconnected (${msg.which})`, sender: "system", timestamp: Date.now() }
-                    ]);
-                    return;
-                }
-
-                const sender = msg.from_agent ? "agent" : "user";
-                const text = msg.message || msg.text || "";
-                setMessages(prev => [...prev, { text, sender, timestamp: Date.now() }]);
-            },
-            () => console.log("agent ws open")
-        );
-
-        wsRef.current = ws;
-
-        return () => {
-            try { ws && ws.close(); } catch (e) { }
-            wsRef.current = null;
-        };
-    }, [session]);
-
-    const handleSend = async () => {
-        if (!input || !session) return;
-        setMessages(prev => [...prev, { text: input, sender: "agent", timestamp: Date.now() }]);
-        const meta = { client_id: clientId, user_id: session.user_id };
-        const ok = sendAgentMessage(wsRef.current, input, meta);
-
-        if (!ok) {
-            try {
-                await fetch(`${process.env.REACT_APP_BACKEND_HTTP}/live_agent_sessions/forward`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ session_id: session.session_id, message: input, metadata: meta })
-                });
-            } catch (e) { console.error(e); }
-        }
-
-        setInput("");
-    };
-
-    const handleEndSession = async () => {
-        if (!session || ending) return;
-        setEnding(true);
-        try {
-            await endLiveAgentSession(session.session_id);
-            setMessages(prev => [...prev, { text: "You ended the session.", sender: "system", timestamp: Date.now() }]);
-            try { wsRef.current && wsRef.current.close(); } catch (e) { }
-
-        } catch (e) {
-            console.error("Failed to end session:", e);
-            setMessages(prev => [...prev, { text: "Failed to end session (try again).", sender: "system", timestamp: Date.now() }]);
-        } finally {
-            setEnding(false);
-        }
-    };
-
-    const formatTime = (ts) => {
-        const date = new Date(ts);
-        return isNaN(date) ? "" : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    };
-
-    if (!session) return <div className="text-gray-500">Select a session</div>;
+import React, { useState, useEffect, useRef } from 'react';
+import { AgentSocket } from '../services/agent_socket';
+const MessageList = ({ messages }) => {
+    const messagesEndRef = useRef(null);
+    useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
     return (
-        <div className="border rounded p-3 h-[520px] flex flex-col">
-            <div className="flex items-center justify-between mb-2">
-                <div className="font-semibold">Session: {session.user_id}</div>
-                <button
-                    onClick={handleEndSession}
-                    disabled={ending}
-                    className="bg-red-600 text-white px-3 py-1 rounded text-sm"
-                >
-                    {ending ? "Ending..." : "End Session"}
+        <div style={{ height: '400px', overflowY: 'scroll', padding: '10px', background: '#f8f9fa', border: '1px solid #ddd' }}>
+            {messages.map((msg, index) => (
+                <div key={index} style={{ textAlign: msg.sender === 'agent' ? 'right' : 'left', marginBottom: '10px' }}>
+                    <span style={{
+                        display: 'inline-block', padding: '8px 12px', borderRadius: '15px',
+                        background: msg.sender === 'agent' ? '#28a745' : '#ffffff', // Agent message green, User message white
+                        color: msg.sender === 'agent' ? 'white' : 'black',
+                        boxShadow: '0 1px 1px rgba(0,0,0,0.1)'
+                    }}>
+                        {msg.text}
+                    </span>
+                </div>
+            ))}
+            <div ref={messagesEndRef} />
+        </div>
+    );
+};
+
+const InputBox = ({ onSend, isConnected }) => {
+    const [input, setInput] = useState('');
+    const handleSubmit = (e) => {
+        e.preventDefault();
+        if (input.trim() && isConnected) {
+            onSend(input.trim());
+            setInput('');
+        }
+    };
+
+    return (
+        <form onSubmit={handleSubmit} style={{ display: 'flex', padding: '10px', borderTop: '1px solid #ccc' }}>
+            <input
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder={isConnected ? "Type your reply..." : "Disconnected. Cannot send."}
+                disabled={!isConnected}
+                style={{ flexGrow: 1, padding: '8px', border: '1px solid #ced4da', borderRadius: '4px 0 0 4px', outline: 'none' }}
+            />
+            <button type="submit" disabled={!isConnected} style={{ padding: '8px 15px', background: isConnected ? '#28a745' : '#ccc', color: 'white', border: 'none', borderRadius: '0 4px 4px 0', cursor: isConnected ? 'pointer' : 'not-allowed' }}>
+                Send
+            </button>
+        </form>
+    );
+};
+
+
+const AgentChatWindow = ({ session, onBack }) => {
+    const [messages, setMessages] = useState([]);
+    const [isConnected, setIsConnected] = useState(false);
+    const socketRef = useRef(null);
+
+    useEffect(() => {
+        if (socketRef.current) {
+            socketRef.current.disconnect();
+        }
+
+        const onMsgReceive = (data) => {
+            const sender = (data.sender_role === 'user') ? 'user' : 'system';
+            if (data.message) {
+                setMessages(prev => [...prev, { text: data.message, sender }]);
+            } else if (data.event === 'connection_success') {
+                setMessages(prev => [...prev, { text: `System: Connected to user session.`, sender: 'system' }]);
+            }
+        };
+
+        const onStatusChange = (status) => {
+            setIsConnected(status);
+        };
+
+        socketRef.current = new AgentSocket(session.session_id, onMsgReceive, onStatusChange);
+        socketRef.current.connect();
+
+        return () => {
+            socketRef.current?.disconnect();
+        };
+    }, [session.session_id]);
+
+    const handleSend = (messageText) => {
+        setMessages(prev => [...prev, { text: messageText, sender: 'agent' }]);
+
+        socketRef.current?.sendMessage(messageText);
+    };
+
+    return (
+        <div style={{ width: '100%', border: '1px solid #ccc', borderRadius: '8px', background: '#fff' }}>
+            <div style={{ background: '#0056b3', color: 'white', padding: '10px', display: 'flex', justifyContent: 'space-between' }}>
+                <span>Chatting with: **{session.user_id ? session.user_id.split(':').pop() : 'N/A'}** ({session.client_id})</span>
+                <span style={{ background: isConnected ? 'lightgreen' : 'red', color: isConnected ? 'black' : 'white', padding: '0 5px', borderRadius: '3px' }}>
+                    {isConnected ? 'LIVE' : 'DISCONNECTED'}
+                </span>
+                <button onClick={onBack} style={{ marginLeft: '10px', padding: '5px 10px', background: '#dc3545', border: 'none', color: 'white', cursor: 'pointer', borderRadius: '4px' }}>
+                    Close Chat
                 </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto mb-3">
-                {messages.map((m, i) => {
-                    const isAgent = m.sender === "agent";
-                    const isUser = m.sender === "user";
-                    const isSystem = m.sender === "system";
+            <MessageList messages={messages} />
 
-                    const alignment = isAgent ? "justify-end" : isUser ? "justify-start" : "justify-center";
-                    const bubbleClass = isAgent
-                        ? "bg-green-200 text-black"
-                        : isUser
-                            ? "bg-blue-200 text-black"
-                            : "bg-gray-200 italic text-gray-700";
-                    const senderLabel = isAgent ? "You" : isUser ? "User" : "";
-
-                    return (
-                        <div key={i} className={`flex my-2 ${alignment}`}>
-                            <div className="max-w-[70%]">
-                                <div className={`p-2 rounded ${bubbleClass}`}>{m.text}</div>
-                                {!isSystem && (
-                                    <div className="text-xs text-gray-500 mt-1 flex justify-between">
-                                        <span>{senderLabel}</span>
-                                        <span>{formatTime(m.timestamp)}</span>
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-                    );
-                })}
-            </div>
-
-            <div className="flex gap-2">
-                <input
-                    value={input}
-                    onChange={e => setInput(e.target.value)}
-                    onKeyDown={e => e.key === "Enter" && handleSend()}
-                    className="flex-1 border px-2 py-1 rounded"
-                />
-                <button onClick={handleSend} className="bg-green-600 text-white px-4 py-1 rounded">Send</button>
-            </div>
+            <InputBox onSend={handleSend} isConnected={isConnected} />
         </div>
     );
-}
+};
+
+export default AgentChatWindow;
